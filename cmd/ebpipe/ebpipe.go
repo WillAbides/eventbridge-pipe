@@ -61,6 +61,8 @@ example:
   $ echo "$data" | \
     ebpipe -s 'test-source' -t 'jp:action' -b 'my-bus' -T 'jp:"@timestamp"' \
     -r 'jp:"el_name"' 
+
+Learn about JMESPath syntax at https://jmespath.org
 `
 
 const jmespathPrefix = "jp:"

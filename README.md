@@ -41,4 +41,6 @@ Flags:
       --batch-size=10            Number of events to send in a batch.
       --flush-interval=2000      Time in milliseconds to wait before sending a partial batch.
                                  Set to 0 to never send a partial batch.
+
+Learn about JMESPath syntax at https://jmespath.org
 ```
