@@ -23,17 +23,23 @@ import (
 )
 
 var kongVars = kong.Vars{
-	"batch_size_help":     "",
-	"flush_interval_help": "",
+	"batch_size_help":     `Number of events to send in a batch.`,
+	"flush_interval_help": `Time in milliseconds to wait before sending a partial batch. Set to 0 to never send a partial batch.`,
+	"region_help":         `The aws region to publish events to.`,
+	"detail_type_help":    `Value for the DetailType field. JMESPath expressions allowed with "jp:" prefix.`,
+	"event_bus_help":      `Value for the "EventBusName" field.`,
+	"resource_help":       `An element for the list in the "Resources" array. JMESPath expressions allowed with "jp:" prefix.`,
+	"source_help":         `Value for the "Source" field. JMESPath expressions allowed with "jp:" prefix.`,
+	"time_help":           `Value for the "Time" field converted from epoch milliseconds. JMESPath expressions allowed with "jp:" prefix.`,
 }
 
 type cliOptions struct {
-	Region        string   `kong:"default=us-east-1"`
-	DetailType    string   `kong:"name=type,short=t"`
-	EventBus      string   `kong:"short=b"`
-	Resource      []string `kong:"short=r"`
-	Source        string   `kong:"short=s"`
-	Time          string   `kong:"name=timestamp,short=T"`
+	Region        string   `kong:"default=us-east-1,help=${region_help}"`
+	DetailType    string   `kong:"required,name=type,short=t,help=${detail_type_help}"`
+	EventBus      string   `kong:"short=b,help=${event_bus_help}"`
+	Resource      []string `kong:"short=r,help=${resource_help}"`
+	Source        string   `kong:"required,short=s,help=${source_help}"`
+	Time          string   `kong:"name=timestamp,short=T,help=${time_help}"`
 	BatchSize     int      `kong:"default=10,help=${batch_size_help}"`
 	FlushInterval int      `kong:"default=2000,help=${flush_interval_help}"`
 
@@ -42,7 +48,20 @@ type cliOptions struct {
 	_putter   eventPutter
 }
 
-const helpDescription = `ebpipe posts events to AWS EventBridge.`
+const helpDescription = `ebpipe posts events to AWS EventBridge.
+
+example:
+  $ AWS_ACCESS_KEY='AKIA****************'
+  $ AWS_SECRET_KEY='shhh_this_is_a_secret'
+  $ data="$(cat <<"EOF"
+      {"action": "obj.add", "@timestamp": 1604953432032, "el_name": "foo", "doc_id": "asdf"}
+      {"action": "obj.rem", "@timestamp": 1604953732032, "el_name": "bar", "doc_id": "fdsa"}
+    EOF
+    )"
+  $ echo "$data" | \
+    ebpipe -s 'test-source' -t 'jp:action' -b 'my-bus' -T 'jp:"@timestamp"' \
+    -r 'jp:"el_name"' 
+`
 
 const jmespathPrefix = "jp:"
 
@@ -71,6 +90,9 @@ func (l lineData) unmarshalled() (interface{}, error) {
 }
 
 func run(ctx context.Context, cli *cliOptions, scanner *bufio.Scanner) error {
+	if cli.BatchSize > 10 {
+		return fmt.Errorf("batch size exceeds aws maximum")
+	}
 	p, err := cli.putter()
 	if err != nil {
 		return err
@@ -201,9 +223,12 @@ func (c *cliOptions) getVal(valName string, data lineData) (string, error) {
 func buildEvent(cli *cliOptions, data []byte) (*eventbridge.PutEventsRequestEntry, error) {
 	dataStr := string(data)
 	ev := eventbridge.PutEventsRequestEntry{
-		EventBusName: &cli.EventBus,
-		Detail:       &dataStr,
+		Detail: &dataStr,
 	}
+	if cli.EventBus != "" {
+		ev.EventBusName = &cli.EventBus
+	}
+
 	ld := lineData{
 		data: data,
 	}
@@ -276,7 +301,10 @@ func (c *cliOptions) eventTime(ld lineData) (*time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strVal == "now" {
+	switch strVal {
+	case "":
+		return nil, nil
+	case "now":
 		now := time.Now().UTC()
 		return &now, nil
 	}
@@ -343,10 +371,18 @@ type awsPutter struct {
 }
 
 func (p *awsPutter) putEvents(ctx context.Context, cache []*eventbridge.PutEventsRequestEntry) error {
-	_, err := p.svc.PutEventsWithContext(ctx, &eventbridge.PutEventsInput{
+	resp, err := p.svc.PutEventsWithContext(ctx, &eventbridge.PutEventsInput{
 		Entries: cache,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if resp.FailedEntryCount != nil {
+		if *resp.FailedEntryCount != 0 {
+			return fmt.Errorf("one or more failed entries: %s", resp.String())
+		}
+	}
+	return nil
 }
 
 type eventPutter interface {
